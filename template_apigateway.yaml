@@ -1,0 +1,145 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: API Gateway para ingestión geoespacial de coordenadas (Proyecto TransMilenio)
+
+Parameters:
+  LambdaFunctionArn:
+    Type: String
+    Description: ARN de la función Lambda que inserta coordenadas en DocumentDB
+
+Resources:
+  # --- API Gateway principal ---
+  TransmiApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: puj-api-geolocalizacion
+      Description: API REST para recibir coordenadas de buses de TransMilenio
+      EndpointConfiguration:
+        Types: 
+          - REGIONAL
+
+  # --- Recurso /location ---
+  LocationResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref TransmiApi
+      ParentId: !GetAtt TransmiApi.RootResourceId
+      PathPart: location
+
+  # --- Método OPTIONS (CORS) ---
+  OptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref TransmiApi
+      ResourceId: !Ref LocationResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{ "statusCode": 200 }'
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'OPTIONS,POST'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: '{}'
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # --- Método POST (proxy con Lambda) ---
+  PostMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref TransmiApi
+      ResourceId: !Ref LocationResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      ApiKeyRequired: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: 
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaFunctionArn}/invocations
+      MethodResponses:
+        - StatusCode: 200
+        - StatusCode: 400
+        - StatusCode: 500
+
+  # --- Deploy + Stage (prod) ---
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - PostMethod
+      - OptionsMethod
+    Properties:
+      RestApiId: !Ref TransmiApi
+      StageName: prod
+      StageDescription: "Producción - API TransMilenio"
+      Description: "Despliegue inicial con validación de body, API Key y CORS"
+      MethodSettings:
+        - ResourcePath: "/*"
+          HttpMethod: "*"
+          MetricsEnabled: true
+          LoggingLevel: INFO
+          DataTraceEnabled: true
+
+  # --- API Key ---
+  TransmiApiKey:
+    Type: AWS::ApiGateway::ApiKey
+    Properties:
+      Name: TransmiClientKey
+      Enabled: true
+      StageKeys:
+        - RestApiId: !Ref TransmiApi
+          StageName: prod
+      Description: "Clave de acceso a API de coordenadas TransMilenio"
+
+  # --- Usage Plan ---
+  TransmiUsagePlan:
+    Type: AWS::ApiGateway::UsagePlan
+    Properties:
+      UsagePlanName: TransmiUsagePlan
+      Description: "Plan de uso con límites de seguridad para API TransMilenio"
+      Throttle:
+        RateLimit: 5
+        BurstLimit: 10
+      Quota:
+        Limit: 5000
+        Period: MONTH
+      ApiStages:
+        - ApiId: !Ref TransmiApi
+          Stage: prod
+
+  # --- Vinculación de API Key con Usage Plan ---
+  UsagePlanKeyAssociation:
+    Type: AWS::ApiGateway::UsagePlanKey
+    Properties:
+      KeyId: !Ref TransmiApiKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref TransmiUsagePlan
+
+  # --- Permisos para invocar la Lambda ---
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref LambdaFunctionArn
+      Principal: apigateway.amazonaws.com
+      SourceArn: 
+        Fn::Sub: arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${TransmiApi}/*/POST/location
+
+Outputs:
+  ApiInvokeURL:
+    Description: URL base de invocación del API
+    Value: 
+      Fn::Sub: https://${TransmiApi}.execute-api.${AWS::Region}.amazonaws.com/prod/location
+
+  ApiKeyValue:
+    Description: API Key generada
+    Value: !Ref TransmiApiKey

@@ -3,104 +3,179 @@ import json
 import os
 import boto3
 from datetime import datetime
+import socket
+import pymongo
+import sys
+import traceback
 
-# --- CONFIGURACIÓN (leída desde las variables de entorno de la Lambda) ---
-DB_HOST = os.environ['DOCDB_HOST']
-DB_SECRET_ARN = os.environ['DOCDB_SECRET_ARN']
-DB_NAME = os.environ['DB_NAME']
-COLLECTION_NAME = os.environ['COLLECTION_NAME']
-
-# El certificado debe estar en la misma carpeta que este script
-CA_CERT_PATH = 'global-bundle.pem' 
-
-# --- CLIENTES (se inicializan fuera del handler para reutilizar la conexión) ---
 secrets_client = boto3.client('secretsmanager')
+secret_name = "puj-documentdb--cluster-secrets"
+region_name = "us-east-1"
 db_client = None
+CA_CERT_PATH = "/opt/python/global-bundle.pem" 
 
-def get_db_credentials():
-    """Obtiene las credenciales de DocumentDB desde Secrets Manager."""
+def get_secret(secret_name: str, region_name: str):
+
+    # Create a Secrets Manager client
+    session = boto3.session.Session()
+    client = session.client(
+        service_name='secretsmanager',
+        region_name=region_name
+    )
+
     try:
-        response = secrets_client.get_secret_value(SecretId=DB_SECRET_ARN)
-        secret = json.loads(response['SecretString'])
-        return secret['username'], secret['password']
-    except Exception as e:
-        print(f"Error al obtener el secreto de Secrets Manager: {e}")
+        get_secret_value_response = client.get_secret_value(SecretId=secret_name)
+    except ClientError as e:
+        # For a list of exceptions thrown, see
+        # https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_GetSecretValue.html
         raise e
 
-def get_db_client():
-    """
-    Inicializa y retorna el cliente de DocumentDB. 
-    Reutiliza la conexión si ya existe (práctica recomendada en Lambda).
-    """
-    global db_client
-    if db_client:
-        try:
-            # Validar si la conexión sigue viva
-            db_client.admin.command('ismaster')
-            return db_client
-        except Exception:
-            print("Conexión perdida, reconectando...")
-            db_client = None # Forzar reconexión
+    secret = json.loads(get_secret_value_response['SecretString'])
+
+    return secret
+
+def test_tcp_connection(host: str, port: int, timeout: int = 5):
+    #Verifica la conectividad TCP al host:puerto
 
     try:
-        db_user, db_pass = get_db_credentials()
-        
-        print(f"Intentando conectar a {DB_HOST}...")
-        client = pymongo.MongoClient(
-            f"mongodb://{db_user}:{db_pass}@{DB_HOST}:27017/?tls=true&tlsCAFile={CA_CERT_PATH}&replicaSet=rs0&readPreference=secondaryPreferred&retryWrites=false",
-            serverSelectionTimeoutMS=5000 # Timeout de 5 segundos
+        socket.create_connection((host, port), timeout=timeout)
+        print(f" Conexión TCP exitosa a {host}:{port}")
+        return True
+    except Exception as e:
+        print(f" Error TCP al conectar con {host}:{port}: {e}, revise si el servidor esta encendido")
+        return False
+
+def connect_to_documentdb(secret: dict):
+    """Establece conexión con DocumentDB usando pymongo"""
+
+    try:
+        username = secret["username"]
+        password = secret["password"]
+        host = secret["host"]
+        port = secret.get("port", 27017)
+
+        # URI recomendada por AWS para DocumentDB Serverless
+        uri = (
+            f"mongodb://{username}:{password}@{host}:{port}/"
+            "?tls=true"
+            f"&tlsCAFile={CA_CERT_PATH}"
+            "&replicaSet=rs0"
+            "&readPreference=secondaryPreferred"
+            "&retryWrites=false"
         )
-        
-        # Forzar una conexión para validar credenciales y conectividad
-        client.admin.command('ismaster')
-        print("Conexión a DocumentDB exitosa.")
-        db_client = client
-        return db_client
-    
+
+        print(f" Intentando conectar a {host}:{port} ...")
+
+        client = pymongo.MongoClient(uri, serverSelectionTimeoutMS=10000)
+        client.admin.command("ping")  # Prueba de conexión
+
+        print("-- Conexión exitosa a DocumentDB Serverless con Pymongo")
+        return client
     except Exception as e:
-        print(f"Error crítico al conectar a DocumentDB: {e}")
-        raise e
+        print("-- Error crítico al conectar con DocumentDB por pymongo:")
+        traceback.print_exc()
+        raise
+
+def is_within_bogota(lat: float, lon: float) -> bool:
+    """Valida si las coordenadas están dentro de un rango aproximado de Bogotá"""
+    # Bogotá: lat 4.45 a 4.85, lon -74.3 a -73.9
+    return 4.45 <= lat <= 4.85 and -74.3 <= lon <= -73.9
 
 # --- HANDLER PRINCIPAL DE LAMBDA ---
 def lambda_handler(event, context):
+
+    print("=" * 80)
+    print("---------------  Lambda ejecutada - Ingesta de coordenadas TransMilenio ---------------------------- ")
+    print("Evento recibido:", json.dumps(event))
+    print("=" * 80)
+
+    # Mostrar contenido del layer
     try:
-        # 1. Obtener el cliente de la base de datos
-        client = get_db_client()
-        db = client[DB_NAME]
-        collection = db[COLLECTION_NAME]
+        print("\n Archivos en /opt/python:", os.listdir("/opt/python"))
+    except Exception:
+        print("\n No se pudo listar /opt/python")
 
-        # 2. Parsear los datos de la API Gateway
-        # Se asume que la API Gateway usa integración Proxy Lambda
-        data = json.loads(event.get('body', '{}'))
-        bus_id = data.get('bus_id')
-        if not bus_id:
-            return {'statusCode': 400, 'body': json.dumps({'error': 'bus_id es requerido'})}
+    try:
+        # -------------------- 1️ Obtener cuerpo del POST (del API Gateway proxy)----------------------
+        if "body" in event:
+            body = json.loads(event["body"])
+        else:
+            body = event
 
-        # 3. Preparar el documento para DocumentDB
-        document_to_upsert = {
-            'route_id': data.get('route_id'),
-            'last_seen': datetime.now().isoformat(),
-            'location': {
-                'type': 'Point',
-                'coordinates': [data.get('longitude'), data.get('latitude')] # Formato GeoJSON [lon, lat]
+        bus_id = body.get("bus_id")
+        lat = body.get("lat")
+        lon = body.get("lon")
+        timestamp = body.get("timestamp", datetime.utcnow().isoformat())
+
+        if not all([bus_id, lat, lon]):
+            return {
+                "statusCode": 400,
+                "body": json.dumps({"error": "Campos requeridos: bus_id, lat, lon"})
+            }
+
+        if not is_within_bogota(float(lat), float(lon)):
+            return {
+                "statusCode": 400,
+                "body": json.dumps({
+                    "error": "Coordenadas fuera del rango de Bogotá",
+                    "lat": lat, "lon": lon
+                })
+            }
+
+        #  ------------------------- 2 Obtener credenciales y conectar -------------------------------
+        secret = get_secret(secret_name, region_name)
+        host = secret["host"]
+        port = secret.get("port", 27017)
+
+        if not test_tcp_connection(host, port):
+            return {
+                "statusCode": 504,
+                "body": json.dumps({"error": f"No hay conectividad TCP a {host}:{port}"}),
+            }
+
+        client = connect_to_documentdb(secret)
+
+        databases = client.list_database_names()
+        print(" Bases de datos disponibles:", databases)
+
+        db = client["transmilenio"]
+        collection = db["locations"]
+
+        # Crear índice 2dsphere si no existe
+        indexes = collection.index_information()
+        if "location_2dsphere" not in indexes:
+            collection.create_index([("location", "2dsphere")])
+            print("-- Índice 2dsphere creado en 'location'")
+
+
+        # 3 Insertar coordenada
+        document = {
+            "bus_id": bus_id,
+            "location": {
+                "type": "Point",
+                "coordinates": [float(lon), float(lat)]
             },
-            'speed_kph': data.get('speed_kph', 0),
-            'status': data.get('status', 'en_ruta')
+            "timestamp": timestamp,
+            "ingested_at": datetime.utcnow().isoformat()
         }
 
-        # 4. Ejecutar la operación UPSERT (Actualiza si existe, Inserta si es nuevo)
-        collection.update_one(
-            {'_id': bus_id},  # El filtro (usamos el bus_id como el _id único)
-            {'$set': document_to_upsert}, # Los datos a actualizar/insertar
-            upsert=True  # La magia del UPSERT
-        )
 
-        # 5. Responder a API Gateway
+        result = collection.insert_one(document)
+        print(f" Documento insertado con ID: {result.inserted_id}")
+
+        # 4️ Respuesta exitosa
         return {
-            'statusCode': 200,
-            'body': json.dumps({'message': f'Datos del bus {bus_id} actualizados'})
+            "statusCode": 200,
+            "body": json.dumps({
+                "message": "Coordenada almacenada correctamente",
+                "inserted_id": str(result.inserted_id)
+            })
         }
 
     except Exception as e:
-        print(f"Error en el handler: {e}")
-        return {'statusCode': 500, 'body': json.dumps({'error': 'Error interno del servidor', 'details': str(e)})}
+        print(" Error en lambda_handler:", e)
+        traceback.print_exc()
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": str(e), "type": str(type(e).__name__)})
+        }
