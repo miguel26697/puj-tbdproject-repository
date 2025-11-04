@@ -1,0 +1,92 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Proyecto Transmilenio: Lambda para procesar coordenadas de buses
+  y almacenarlas en Amazon DocumentDB.
+
+Parameters:
+  DocDBHost:
+    Type: String
+    Description: "El endpoint del cluster de DocumentDB (ej: ...docdb.amazonaws.com)"
+  DocDBSecretArn:
+    Type: String
+    Description: "El ARN del secreto en AWS Secrets Manager que contiene el user/pass de DocumentDB."
+  VpcId:
+    Type: String
+    Description: "El ID de la VPC donde están DocumentDB y la Lambda."
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet::Id
+    Description: "Una subred privada donde correrá la Lambda (Debe estar en la misma VPC que DocDB)."
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet::Id
+    Description: "Una segunda subred privada en otra AZ para alta disponibilidad."
+  LambdaSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: "El Grupo de Seguridad para la Lambda. Este grupo debe tener permiso de salida (outbound) a DocDB en el puerto 27017."
+
+Globals:
+  Function:
+    Timeout: 30
+    Runtime: python3.12
+    MemorySize: 256
+
+Resources:
+  # -----------------------------------------------------------------
+  # 1. Capa (Layer) de Lambda que contiene la librería Pymongo
+  # -----------------------------------------------------------------
+  PymongoLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: pymongo-layer
+      Description: "Capa de dependencias con la librería pymongo"
+      ContentUri: layers/pymongo/
+      CompatibleRuntimes:
+        - python3.12
+      BuildMethod: python3.12 # SAM usará pip para instalar lo que esté en requirements.txt
+
+  # -----------------------------------------------------------------
+  # 2. La Función Lambda
+  # -----------------------------------------------------------------
+  BusLocationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: transmilenio-bus-location-processor
+      CodeUri: src/
+      Handler: app.lambda_handler # (El archivo se llama app.py y la función lambda_handler)
+      Layers:
+        - !Ref PymongoLayer # Adjunta la capa de pymongo
+      Environment:
+        Variables:
+          DOCDB_HOST: !Ref DocDBHost
+          DOCDB_SECRET_ARN: !Ref DocDBSecretArn
+          DB_NAME: "transmilenio"
+          COLLECTION_NAME: "bus_status"
+      
+      # -------------------------------------------------------------
+      # Configuración de Red (VPC) - ¡CRÍTICO para DocumentDB!
+      # -------------------------------------------------------------
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroupId
+        SubnetIds:
+          - !Ref PrivateSubnetA
+          - !Ref PrivateSubnetB
+          
+      # -------------------------------------------------------------
+      # Permisos (IAM Roles) que la Lambda necesita
+      # -------------------------------------------------------------
+      Policies:
+        # 1. Permiso para acceder a la VPC
+        - VPCAccessPolicy: {}
+        
+        # 2. Permiso para LEER el secreto (user/pass) desde Secrets Manager
+        - SecretsManagerReadPolicy:
+            SecretArn: !Ref DocDBSecretArn
+
+Outputs:
+  BusLocationFunctionName:
+    Description: "Nombre de la función Lambda"
+    Value: !Ref BusLocationFunction
+  BusLocationFunctionArn:
+    Description: "ARN de la función Lambda"
+    Value: !GetAtt BusLocationFunction.Arn
