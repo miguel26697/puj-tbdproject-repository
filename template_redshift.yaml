@@ -1,0 +1,102 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: "Redshift Serverless - Proyecto TransMilenio"
+
+Parameters:
+  NamespaceName:
+    Type: String
+    Default: transmilenio-redshift-ns
+
+  WorkgroupName:
+    Type: String
+    Default: transmilenio-redshift-wg
+
+  BaseCapacity:
+    Type: Number
+    Default: 128
+
+  VpcId:
+    Type: String
+    Default: vpc-0d8e000397287b2e9
+
+  Subnet1:
+    Type: String
+    Default: subnet-03a023de4eacb230a
+
+  Subnet2:
+    Type: String
+    Default: subnet-0a94307c1e4300780
+
+  RedshiftSecurityGroup:
+    Type: String
+    Default: sg-0368577e5ffb00e3d
+
+  IamRole1:
+    Type: String
+    Default: arn:aws:iam::394208074279:role/AWS_Redshift_Role
+
+  IamRole2:
+    Type: String
+    Default: arn:aws:iam::394208074279:role/service-role/AmazonRedshift-CommandsAccessRole-20251110T184351
+
+Resources:
+
+  # ---------------------------------------------------------
+  # 1. Redshift Serverless Namespace
+  # ---------------------------------------------------------
+  RedshiftNamespace:
+    Type: AWS::RedshiftServerless::Namespace
+    Properties:
+      NamespaceName: !Ref NamespaceName
+      DbName: transmi
+      IamRoles:
+        - !Ref IamRole1
+        - !Ref IamRole2
+      DefaultIamRoleArn: !Ref IamRole1
+      AdminUsername: pujadmin
+      AdminUserPassword: "Postgrado147"    # cámbiala si quieres parametrizar
+      Tags:
+        - Key: project
+          Value: transmilenio
+
+  # ---------------------------------------------------------
+  # 2. Workgroup (capacidad + VPC + SG)
+  # ---------------------------------------------------------
+  RedshiftWorkgroup:
+    Type: AWS::RedshiftServerless::Workgroup
+    Properties:
+      WorkgroupName: !Ref WorkgroupName
+      NamespaceName: !Ref NamespaceName
+
+      BaseCapacity: !Ref BaseCapacity     # 128 RPUs como en tu consola
+
+      PubliclyAccessible: true
+      EnhancedVpcRouting: false
+
+      SecurityGroupIds:
+        - !Ref RedshiftSecurityGroup
+
+      SubnetIds:
+        - !Ref Subnet1
+        - !Ref Subnet2
+
+      Tags:
+        - Key: project
+          Value: transmilenio
+
+Outputs:
+
+  WorkgroupEndpoint:
+    Description: Endpoint JDBC/ODBC del Workgroup
+    Value: !GetAtt RedshiftWorkgroup.Endpoint.Address
+
+  WorkgroupPort:
+    Description: Puerto del Workgroup
+    Value: !GetAtt RedshiftWorkgroup.Endpoint.Port
+
+  NamespaceOut:
+    Description: Namespace creado
+    Value: !Ref RedshiftNamespace
+
+  WorkgroupOut:
+    Description: Workgroup creado
+    Value: !Ref RedshiftWorkgroup
