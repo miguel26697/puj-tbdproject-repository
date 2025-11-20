@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>TransMilenio Tracker</title>
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+  <style>
+    body { margin: 0; font-family: Arial, sans-serif; }
+    #map { height: 95vh; width: 100%; }
+    header {
+      background: #e30613;
+      color: white;
+      text-align: center;
+      padding: 10px 0;
+      font-weight: bold;
+      font-size: 20px;
+    }
+    #controls {
+      position: absolute;
+      top: 90px;
+      left: 10px;
+      z-index: 9999;
+      background: white;
+      padding: 10px;
+      border-radius: 8px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+    }
+    select, button {
+      width: 100%;
+      margin-top: 5px;
+      padding: 6px;
+    }
+  </style>
+</head>
+
+<body>
+<header> Simulador TransMilenio – Seguimiento en Tiempo Real</header>
+
+<div id="controls">
+  <label>Filtrar por ruta:</label>
+  <select id="filtroRuta">
+    <option value="">Todas</option>
+    <option value="D15">D15</option>
+    <option value="B15">B15</option>
+    <option value="B10">B10</option>
+    <option value="J10">J10</option>
+    <option value="H74">B10</option>
+    <option value="A74">J10</option>
+  </select>
+
+  <label>Filtrar por estado:</label>
+  <select id="filtroEstado">
+    <option value="">Todos</option>
+    <option value="EN_RUTA">EN_RUTA</option>
+    <option value="EN_PARADA">EN_PARADA</option>
+    <option value="DETENIDO">DETENIDO</option>
+  </select>
+
+  <label>Filtrar por escenario:</label>
+  <select id="filtroEscenario">
+    <option value="">Todos</option>
+    <option value="HORA_PICO">HORA_PICO</option>
+    <option value="HORA_VALLE">HORA_VALLE</option>
+    <option value="BUS_VARADO">BUS_VARADO</option>
+  </select>
+
+  <button onclick="actualizarMapa()"> Actualizar</button>
+</div>
+
+<div id="map"></div>
+
+<script>
+  let clickMarker = null;   // marcador temporal del punto clickeado
+
+  const API_URL = "https://i55qr1ngai.execute-api.us-east-1.amazonaws.com/prod/get_positions";
+  const API_KEY = "tqTTxzx1ri1M1Thy18E0vVB4xexRBDY8aoovw7i5";
+
+  const map = L.map("map").setView([4.7, -74.05], 12);
+
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 18 }).addTo(map);
+
+  const busMarkers = {};
+  const stationMarkers = {};
+  const historyLines = {};
+
+  const busIcon = L.icon({
+    iconUrl: "https://cdn-icons-png.flaticon.com/512/416/416597.png",
+    iconSize: [42, 42],
+    iconAnchor: [21, 21]
+  });
+
+  // ====================================================
+  // 1. CARGAR ESTACIONES
+  // ====================================================
+  async function cargarEstacionesPrimeraVez() {
+    console.log("[cargarEstacionesPrimeraVez] Solicitando estaciones…");
+
+    const res = await fetch(API_URL + "?mode=estaciones", {
+      headers: { "x-api-key": API_KEY }
+    });
+
+    const data = await res.json();
+    console.log("[cargarEstacionesPrimeraVez] Respuesta estaciones:", data);
+
+    dibujarEstaciones(data.estaciones);
+  }
+
+  // ====================================================
+  // 2. LIMPIAR TODOS LOS MARKERS DE BUSES
+  // ====================================================
+  function limpiarMapaDeBuses() {
+    console.log("[limpiarMapaDeBuses] Eliminando todos los markers previos…");
+
+    Object.values(busMarkers).forEach(m => map.removeLayer(m));
+    Object.keys(busMarkers).forEach(k => delete busMarkers[k]);
+  }
+
+  // ====================================================
+  // 3. ACTUALIZAR MAPA
+  // ====================================================
+  async function actualizarMapa() {
+    console.log("[actualizarMapa] Filtrando buses…");
+
+    let query = "?mode=all";
+
+    const ruta = document.getElementById("filtroRuta").value;
+    const estado = document.getElementById("filtroEstado").value;
+    const esc = document.getElementById("filtroEscenario").value;
+
+    if (ruta) query = `?mode=route&ruta=${ruta}`;
+    if (estado) query = `?mode=status&estado=${estado}`;
+    if (esc) query = `?mode=escenario&escenario=${esc}`;
+
+    console.log("[actualizarMapa] Query final:", query);
+
+    const res = await fetch(API_URL + query, {
+      headers: { "x-api-key": API_KEY }
+    });
+
+    const data = await res.json();
+    console.log("[actualizarMapa] Buses recibidos:", data.buses);
+
+    // borrar buses viejos
+    limpiarMapaDeBuses();
+
+    dibujarBuses(data.buses);
+  }
+
+  // ====================================================
+  // 4. DIBUJAR ESTACIONES
+  // ====================================================
+  function dibujarEstaciones(estaciones) {
+    console.log("[dibujarEstaciones]------------------- Dibujando estaciones:", estaciones.length);
+
+    if (Object.keys(stationMarkers).length > 0) return;
+
+    const coords = estaciones.map(e => [e.latitud, e.longitud]);
+
+    L.polyline(coords, { color: "#E30613", weight: 5, opacity: 0.3 }).addTo(map);
+
+    estaciones.forEach(est => {
+      const marker = L.circleMarker([est.latitud, est.longitud], {
+        radius: 6,
+        color: est.tipo === "P" ? "blue" : "red",
+        fillOpacity: 0.8
+      })
+      .addTo(map)
+      .bindPopup(`<b>${est.nombre}</b><br>Tipo: ${est.tipo}`);
+
+      marker.on("click", () => obtenerBusesCercanosEstacion(est));
+
+      stationMarkers[est.id] = marker;
+    });
+  }
+
+  // ====================================================
+  // 5. DIBUJAR BUSES
+  // ====================================================
+  function dibujarBuses(buses) {
+    console.log("[dibujarBuses]------------- Dibujando buses:", buses.length);
+
+    // limpiar rutas de historial
+    Object.values(historyLines).forEach(l => map.removeLayer(l));
+
+    buses.forEach(bus => {
+      console.log("Bus:", bus);
+
+      const id = bus.bus_id;
+      const [lon, lat] = bus.location.coordinates;
+
+      if (!busMarkers[id]) {
+        busMarkers[id] = L.marker([lat, lon], { icon: busIcon }).addTo(map);
+      } else {
+        busMarkers[id].setLatLng([lat, lon]);
+      }
+
+      busMarkers[id].bindPopup(`
+        <b>${id}</b><br>
+        Ruta: ${bus.ruta}<br>
+        Estado: ${bus.estado}<br>
+        Escenario: ${bus.escenario}<br>
+        Velocidad: ${bus.velocidad_kmh} km/h<br>
+        <button onclick="mostrarHistorial('${id}')">Ver recorrido</button>
+      `);
+    });
+  }
+
+  // ====================================================
+  // 6. BUSES CERCA DE UNA ESTACIÓN
+  // ====================================================
+  async function obtenerBusesCercanosEstacion(est) {
+    console.log(" [near_station] Estación seleccionada:", est);
+
+    const url = `${API_URL}?mode=near_station&id=${est.id}`;
+    console.log("[near_station] URL:", url);
+
+    const res = await fetch(url, { headers: { "x-api-key": API_KEY } });
+    const data = await res.json();
+
+    console.log(" [near_station] Buses cerca:", data);
+
+    let html = `
+      <b> Buses cerca de ${est.nombre}</b><br><br>
+      <table border="1" style="border-collapse: collapse; width: 260px;">
+        <tr>
+          <th>Bus</th>
+          <th>Distancia</th>
+          <th>ETA</th>
+        </tr>`;
+
+    data.buses.forEach(bus => {
+      const dist = bus.distancia_m.toFixed(1);
+      const vel = bus.velocidad_kmh || 0;
+      const eta = vel > 0 ? (dist / (vel * 1000/60)).toFixed(1) + " min" : "N/A";
+
+      html += `
+        <tr>
+          <td>${bus.bus_id}</td>
+          <td>${dist} m</td>
+          <td>${eta}</td>
+        </tr>`;
+    });
+
+    html += "</table>";
+
+    L.popup()
+      .setLatLng([est.latitud, est.longitud])
+      .setContent(html)
+      .openOn(map);
+  }
+
+  // ====================================================
+  // 7. HISTORIAL DE UN BUS
+  // ====================================================
+  let historialActivo = null;  
+  let historialBusId = null;
+
+  async function mostrarHistorial(busId) {
+    console.log("[mostrarHistorial] Consultando historial para:", busId);
+
+    const url = `${API_URL}?mode=history&bus_id=${busId}&limit=30`;
+    const res = await fetch(url, { headers: { "x-api-key": API_KEY } });
+    const data = await res.json();
+
+    console.log("[mostrarHistorial] Historial recibido:", data);
+
+    // Borrar historial anterior si existe
+    if (historialActivo) {
+      map.removeLayer(historialActivo);
+      historialActivo = null;
+      historialBusId = null;
+    }
+
+    const coords = data.history.map(p => [
+      p.location.coordinates[1],
+      p.location.coordinates[0]
+    ]);
+
+    // Dibujar nueva línea
+    historialActivo = L.polyline(coords, {
+      color: "blue",
+      weight: 4,
+      opacity: 0.85
+    }).addTo(map);
+
+    historialBusId = busId;
+
+    console.log("[mostrarHistorial] Historial dibujado correctamente para:", busId);
+  }
+
+  // ====================================================
+  // 8. BUSES CERCA DE UN PUNTO CUALQUIERA (CLICK EN MAPA)
+  // ====================================================
+  async function obtenerBusesCercanosPunto(lat, lon) {
+    console.log("[near_buses] Punto clickeado:", lat, lon);
+
+    const url = `${API_URL}?mode=near_buses&lat=${lat}&lon=${lon}&maxDistance=20000`;
+    console.log("[near_buses] URL:", url);
+
+    const res = await fetch(url, { headers: { "x-api-key": API_KEY } });
+    const data = await res.json();
+
+    console.log("[near_buses] Buses cerca del punto:", data);
+
+    let html = `
+      <b> Buses cerca del punto seleccionado</b><br><br>
+      <table border="1" style="border-collapse: collapse; width: 260px;">
+        <tr>
+          <th>Bus</th>
+          <th>Distancia</th>
+          <th>ETA</th>
+        </tr>`;
+
+    data.buses.forEach(bus => {
+      const dist = bus.distancia_m.toFixed(1);
+      const vel = bus.velocidad_kmh || 0;
+      const eta = vel > 0 ? (dist / (vel * 1000/60)).toFixed(1) + " min" : "N/A";
+
+      html += `
+        <tr>
+          <td>${bus.bus_id}</td>
+          <td>${dist} m</td>
+          <td>${eta}</td>
+        </tr>`;
+    });
+
+    html += "</table>";
+
+    L.popup()
+      .setLatLng([lat, lon])
+      .setContent(html)
+      .openOn(map);
+  }
+
+  // ====================================================
+  // 9. EVENTO CLICK EN EL MAPA
+  // ====================================================
+
+    map.on("click", function (e) {
+      const lat = e.latlng.lat;
+      const lon = e.latlng.lng;
+
+      console.log("[MAP CLICK] Coordenadas clickeadas:", lat, lon);
+
+      // 🧹 Eliminar el marcador previo si existe
+      if (clickMarker) {
+        map.removeLayer(clickMarker);
+        clickMarker = null;
+      }
+
+      // Crear nuevo marcador temporal
+      clickMarker = L.circleMarker([lat, lon], {
+        radius: 7,
+        color: "green",
+        fillOpacity: 0.9
+      })
+        .addTo(map)
+        .bindPopup(" Punto seleccionado")
+        .openPopup();
+
+      //  Buscar buses cerca del punto
+      obtenerBusesCercanosPunto(lat, lon);
+    });
+
+  map.on("popupclose", function () {
+  if (clickMarker) {
+    map.removeLayer(clickMarker);
+    clickMarker = null;
+  }
+});
+
+  map.on("click", function () {
+    if (historialActivo) {
+      console.log("[MAP CLICK] Limpiando historial…");
+      map.removeLayer(historialActivo);
+      historialActivo = null;
+      historialBusId = null;
+    }
+  });
+
+
+  // Inicialización
+  console.log("-------------------- Iniciando front --------------------------------");
+  cargarEstacionesPrimeraVez();
+  actualizarMapa();
+  //setInterval(actualizarMapa, 5000); 
+</script>

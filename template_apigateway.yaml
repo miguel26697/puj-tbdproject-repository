@@ -71,6 +71,25 @@ Resources:
         - StatusCode: 400
         - StatusCode: 500
 
+  # --- Método GET (proxy con Lambda) ---
+  GetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref TransmiApi
+      ResourceId: !Ref LocationResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      ApiKeyRequired: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaFunctionArn}/invocations
+      MethodResponses:
+        - StatusCode: 200
+        - StatusCode: 400
+        - StatusCode: 500
+
   # --- Deploy + Stage (prod) ---
   ApiDeployment:
     Type: AWS::ApiGateway::Deployment

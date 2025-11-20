@@ -1,0 +1,145 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: "Plantilla ETL del Proyecto TransMilenio: Crawler + Job PySpark + Conexiones Glue"
+
+Parameters:
+  RawBucketName:
+    Type: String
+    Description: Nombre del bucket que contiene los datos crudos
+
+  GlueConnection1Name:
+    Type: String
+    Default: puj-conn-redshift
+    Description: Nombre de la primera conexión Glue 
+
+  GlueConnection2Name:
+    Type: String
+    Default: puj-conn-aurora
+    Description: Nombre de la segunda conexión Glue 
+
+  GlueJobScriptS3Path:
+    Type: String
+    Description: Ruta completa del script PySpark 
+    Default: s3://puj-transmilenio-bucket/scripts/etl/transmi_etl.py
+
+  GlueJobName:
+    Type: String
+    Default: puj-ETL-procesamiento-redshift
+    Description: Nombre del Glue Job
+
+Resources:
+
+  # ---------------------------------------------------------
+  # IAM ROLE PARA EL JOB
+  # ---------------------------------------------------------
+  GlueJobRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: AWS_Glue_Role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: glue.amazonaws.com
+            Action: sts:AssumeRole
+
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/SecretsManagerReadWrite
+
+
+  # ---------------------------------------------------------
+  # CONEXIÓN GLUE 1 (ej: Redshift)
+  # ---------------------------------------------------------
+  GlueConnection1:
+    Type: AWS::Glue::Connection
+    Properties:
+      ConnectionInput:
+        Name: !Ref GlueConnection1Name
+        Description: "Conexión 1 de Redshift"
+        ConnectionType: JDBC
+        ConnectionProperties:
+          JDBC_CONNECTION_URL: "jdbc:redshift://cluster-url.redshift.amazonaws.com:5439/dev"
+          USERNAME: "pujadmin"
+          PASSWORD: "Postgrado147"
+        PhysicalConnectionRequirements:
+          AvailabilityZone: "us-east-1a"
+          SecurityGroupIdList: ['sg-0368577e5ffb00e3d']
+          SubnetId: "subnet-09ad95729a8a98b68"
+      CatalogId: !Ref AWS::AccountId
+
+  # ---------------------------------------------------------
+  # CONEXIÓN GLUE 2 (ej: Aurora/Postgres)
+  # ---------------------------------------------------------
+  GlueConnection2:
+    Type: AWS::Glue::Connection
+    Properties:
+      ConnectionInput:
+        Name: !Ref GlueConnection2Name
+        Description: "Conexión 2 Mongo"
+        ConnectionType: MongoDB
+        ConnectionProperties:
+          JDBC_CONNECTION_URL: "mongodb+srv://puj-topicos-bd.96ispxm.mongodb.net/transmilenio"
+          USERNAME: "miguelrippe01_db_user"
+          PASSWORD: "Ddve4aJuWyGrAn0s"
+        PhysicalConnectionRequirements:
+          AvailabilityZone: "us-east-1a"
+          SecurityGroupIdList: ['sg-0dca57789841ced98']
+          SubnetId: "subnet-yyyyyy"
+      CatalogId: !Ref AWS::AccountId
+
+  # ---------------------------------------------------------
+  # CRAWLER
+  # ---------------------------------------------------------
+  MongoCrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      Name: puj-atlas-mongodb-to-aws
+      Role: !GetAtt GlueJobRole.Arn
+      DatabaseName: db_transmilenio_glue
+      TablePrefix: glue_
+      Targets:
+        MongoDBTargets:
+          - ConnectionName: puj-conn-mongo-atlas
+            Path: "transmilenio/locations"
+      SchemaChangePolicy:
+        UpdateBehavior: UPDATE_IN_DATABASE
+        DeleteBehavior: LOG
+
+
+  # ---------------------------------------------------------
+  # GLUE JOB (Pyspark)
+  # ---------------------------------------------------------
+  TransmiGlueJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Name: puj-etl-transmilenio
+      Role: !GetAtt GlueJobRole.Arn
+      GlueVersion: "4.0"
+      NumberOfWorkers: 4
+      WorkerType: G.1X
+      Command:
+        Name: glueetl
+        PythonVersion: "3"
+        ScriptLocation: !Ref GlueJobScriptS3Path
+      DefaultArguments:
+        --connection_name: puj-conn-redshift   # solo Redshift
+        --TempDir: !Sub s3://${RawBucketName}/redshift/temp/
+        --job-bookmark-option: "job-bookmark-enable"
+
+
+Outputs:
+  CrawlerName:
+    Description: Nombre del crawler creado
+    Value: !Ref TransmiCrawler
+
+  GlueJobNameOut:
+    Description: Nombre del Glue Job creado
+    Value: !Ref TransmiGlueJob
+
+  Connection1:
+    Value: !Ref GlueConnection1Name
+
+  Connection2:
+    Value: !Ref GlueConnection2Name

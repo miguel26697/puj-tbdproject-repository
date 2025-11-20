@@ -7,12 +7,12 @@ import socket
 import pymongo
 import sys
 import traceback
+from pymongo.server_api import ServerApi
 
 secrets_client = boto3.client('secretsmanager')
-secret_name = "puj-documentdb--cluster-secrets"
-region_name = "us-east-1"
-db_client = None
-CA_CERT_PATH = "/opt/python/global-bundle.pem" 
+region_name = os.environ.get("REGION_NAME")
+CA_CERT_PATH = os.environ.get("CA_CERT_PATH")
+
 
 def get_secret(secret_name: str, region_name: str):
 
@@ -22,59 +22,40 @@ def get_secret(secret_name: str, region_name: str):
         service_name='secretsmanager',
         region_name=region_name
     )
-
     try:
         get_secret_value_response = client.get_secret_value(SecretId=secret_name)
     except ClientError as e:
-        # For a list of exceptions thrown, see
-        # https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_GetSecretValue.html
         raise e
 
     secret = json.loads(get_secret_value_response['SecretString'])
 
     return secret
 
-def test_tcp_connection(host: str, port: int, timeout: int = 5):
-    #Verifica la conectividad TCP al host:puerto
 
-    try:
-        socket.create_connection((host, port), timeout=timeout)
-        print(f" Conexión TCP exitosa a {host}:{port}")
-        return True
-    except Exception as e:
-        print(f" Error TCP al conectar con {host}:{port}: {e}, revise si el servidor esta encendido")
-        return False
+def connect_to_atlas(secret):
 
-def connect_to_documentdb(secret: dict):
-    """Establece conexión con DocumentDB usando pymongo"""
+    username = secret["username"]
+    password = secret["password"]
+    cluster = secret["cluster"]
+    app_name = secret.get("appName", "myApp")
 
-    try:
-        username = secret["username"]
-        password = secret["password"]
-        host = secret["host"]
-        port = secret.get("port", 27017)
-
-        # URI recomendada por AWS para DocumentDB Serverless
-        uri = (
-            f"mongodb://{username}:{password}@{host}:{port}/"
-            "?tls=true"
-            f"&tlsCAFile={CA_CERT_PATH}"
-            "&replicaSet=rs0"
-            "&readPreference=secondaryPreferred"
-            "&retryWrites=false"
+    uri = (
+        f"mongodb+srv://{username}:{password}@{cluster}/"
+        f"?retryWrites=true&w=majority&appName={app_name}"
+    )
+    # Create a new client and connect to the server
+    client = pymongo.MongoClient(uri, 
+            server_api=ServerApi('1'),
+            serverSelectionTimeoutMS=10000
         )
-
-        print(f" Intentando conectar a {host}:{port} ...")
-
-        client = pymongo.MongoClient(uri, serverSelectionTimeoutMS=10000)
-        client.admin.command("ping")  # Prueba de conexión
-
-        print("-- Conexión exitosa a DocumentDB Serverless con Pymongo")
-        return client
+    # Send a ping to confirm a successful connection
+    try:
+        client.admin.command('ping')
+        print("Pinged your deployment. You successfully connected to MongoDB!")
     except Exception as e:
-        print("-- Error crítico al conectar con DocumentDB por pymongo:")
-        traceback.print_exc()
-        raise
+        print(e)
+
+    return client
 
 def is_within_bogota(lat: float, lon: float) -> bool:
     """Valida si las coordenadas están dentro de un rango aproximado de Bogotá"""
@@ -103,9 +84,29 @@ def lambda_handler(event, context):
             body = event
 
         bus_id = body.get("bus_id")
-        lat = body.get("lat")
-        lon = body.get("lon")
-        timestamp = body.get("timestamp", datetime.utcnow().isoformat())
+        lat = body.get("location", {}).get("coordinates", [None, None])[1] or body.get("lat")
+        lon = body.get("location", {}).get("coordinates", [None, None])[0] or body.get("lon")
+
+        timestamp = body.get("timestamp")
+        velocidad = body.get("velocidad_kmh")
+        estado = body.get("estado")
+        escenario = body.get("escenario")
+        ruta = body.get("ruta")
+        direccion = body.get("direccion")
+
+        # Subdocumento de tramo
+        tramo = body.get("tramo", {})
+        inicio_tramo = tramo.get("inicio")
+        fin_tramo = tramo.get("fin")
+        fraccion = tramo.get("fraccion")
+
+        # Métricas internas
+        metrics_runtime = body.get("metrics_runtime", {})
+        steps_per_segment = metrics_runtime.get("steps_per_segment")
+        current_step = metrics_runtime.get("current_step")
+        steps_remaining = metrics_runtime.get("steps_remaining")
+
+
 
         if not all([bus_id, lat, lon]):
             return {
@@ -122,56 +123,127 @@ def lambda_handler(event, context):
                 })
             }
 
-        #  ------------------------- 2 Obtener credenciales y conectar -------------------------------
-        secret = get_secret(secret_name, region_name)
-        host = secret["host"]
-        port = secret.get("port", 27017)
+        #  ------------------------- 2 Conectar Atlas-------------------------------
 
-        if not test_tcp_connection(host, port):
-            return {
-                "statusCode": 504,
-                "body": json.dumps({"error": f"No hay conectividad TCP a {host}:{port}"}),
-            }
-
-        client = connect_to_documentdb(secret)
+        secret_mongo = get_secret("puj-mongoDB-secrets", region_name)
+        client = connect_to_atlas(secret_mongo)
 
         databases = client.list_database_names()
         print(" Bases de datos disponibles:", databases)
 
         db = client["transmilenio"]
         collection = db["locations"]
+        col_last = db["last_positions"]
+        
+
 
         # Crear índice 2dsphere si no existe
         indexes = collection.index_information()
+
         if "location_2dsphere" not in indexes:
             collection.create_index([("location", "2dsphere")])
             print("-- Índice 2dsphere creado en 'location'")
 
+        indexes_last = col_last.index_information()
 
-        # 3 Insertar coordenada
+        if "location_2dsphere" not in indexes_last:
+            col_last.create_index([("location", "2dsphere")])
+            print("-- Índice 2dsphere creado en 'last_positions'")
+
+        try:
+            timestamp_dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        except:
+            timestamp_dt = datetime.utcnow()
+    
+        # Índice TTL (si no existe)
+        if "timestamp_ttl" not in indexes:
+            # 86400 segundos = 24 horas
+            collection.create_index(
+                [("timestamp", 1)],
+                expireAfterSeconds=86400,
+                name="timestamp_ttl"
+            )
+            print("Índice TTL creado: documentos expirarán después de 24h")
+
+        # -------------------- 3️ Insertar coordenada con velocidad y estado ----------------------
         document = {
             "bus_id": bus_id,
+            "ruta": ruta,
+            "escenario": escenario,
+            "estado": estado,
+            "direccion": direccion,
+            "timestamp": timestamp_dt,
+            "ingested_at": datetime.utcnow(),
+
             "location": {
                 "type": "Point",
                 "coordinates": [float(lon), float(lat)]
             },
-            "timestamp": timestamp,
-            "ingested_at": datetime.utcnow().isoformat()
+
+            "velocidad_kmh": float(velocidad) if velocidad is not None else None,
+            "tramo": tramo,
+            "metrics_runtime": metrics_runtime
+        }
+
+        # ------------------- Insert EN Coleccion Historica -------------------|
+
+        result = collection.insert_one(document)
+        print(f" Documento insertado con ID en historico: {result.inserted_id}")
+
+        document_last = {
+            "bus_id": bus_id,
+            "ruta": ruta,
+            "escenario": escenario,
+            "estado": estado,
+            "direccion": direccion,
+            "timestamp": timestamp_dt,
+            "ingested_at": datetime.utcnow(),
+
+            "location": {
+                "type": "Point",
+                "coordinates": [float(lon), float(lat)]
+            },
+
+            "velocidad_kmh": float(velocidad) if velocidad is not None else None,
+            "tramo": tramo,
+            "metrics_runtime": metrics_runtime
         }
 
 
-        result = collection.insert_one(document)
-        print(f" Documento insertado con ID: {result.inserted_id}")
+        # ------------------- UPSERT EN Coleccion last_positions -------------------|
+        col_last.update_one(
+            {"bus_id": bus_id},
+            {"$set": document_last},    # guarda la última posición
+            upsert=True
+        )
+        print(f"Última posición actualizada para {bus_id}")
 
-        # 4️ Respuesta exitosa
+        # -------------------- 4️ Respuesta final ----------------------
         return {
             "statusCode": 200,
             "body": json.dumps({
                 "message": "Coordenada almacenada correctamente",
-                "inserted_id": str(result.inserted_id)
+                "inserted_id": str(result.inserted_id),
+                "bus_id": bus_id,
+                "ruta": ruta,
+                "timestamp": timestamp,  
+                "ingested_at": datetime.utcnow().isoformat(),
+
+                "location": document["location"],
+
+                "estado": estado,
+                "velocidad_kmh": velocidad,
+                "escenario": escenario,
+                "direccion": direccion,
+
+                "tramo": document["tramo"],
+                "metrics_runtime": document["metrics_runtime"]
             })
         }
 
+        # -------------------- 5️ Cerrar conexión ----------------------
+        client.close()
+        
     except Exception as e:
         print(" Error en lambda_handler:", e)
         traceback.print_exc()

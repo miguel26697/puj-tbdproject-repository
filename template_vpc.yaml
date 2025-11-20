@@ -1,0 +1,204 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "VPC Transmilenio - 2 subnets públicas, 1 privada, NAT Gateway, IGW, Route Tables y Security Groups"
+
+Parameters:
+  VPCCIDR:
+    Type: String
+    Default: 172.31.0.0/16
+
+  PublicSubnet1CIDR:
+    Type: String
+    Default: 172.31.0.0/20
+
+  PublicSubnet2CIDR:
+    Type: String
+    Default: 172.31.16.0/20
+
+  PrivateSubnetCIDR:
+    Type: String
+    Default: 172.31.32.0/20
+
+Resources:
+  # -----------------------------
+  # VPC
+  # -----------------------------
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VPCCIDR
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: puj-vpc
+
+  # -----------------------------
+  # Internet Gateway
+  # -----------------------------
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: puj-us-east-1-igw
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # -----------------------------
+  # Public Subnet 1
+  # -----------------------------
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: us-east-1a
+      CidrBlock: !Ref PublicSubnet1CIDR
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: puj-us-east-1-public-1a
+
+  # -----------------------------
+  # Public Subnet 2
+  # -----------------------------
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: us-east-1b
+      CidrBlock: !Ref PublicSubnet2CIDR
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: puj-us-east-1-public-1b
+
+  # -----------------------------
+  # Private Subnet
+  # -----------------------------
+  PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: us-east-1d
+      CidrBlock: !Ref PrivateSubnetCIDR
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: puj-us-east-1-private-1d
+
+  # -----------------------------
+  # NAT Gateway
+  # -----------------------------
+  EIPNAT:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: puj-nat-eip
+
+  NATGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt EIPNAT.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: puj-nat-gw-pub
+
+  # -----------------------------
+  # Public Route Table
+  # -----------------------------
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: puj-us-east-1-public-rtb
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet2RouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  # -----------------------------
+  # Private Route Table
+  # -----------------------------
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: puj-us-east-1-private-rtb
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NATGateway
+
+  PrivateSubnetRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet
+      RouteTableId: !Ref PrivateRouteTable
+
+  # -----------------------------
+  # SECURITY GROUPS
+  # -----------------------------
+  LambdaSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Allows Lambda to access other services"
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: puj_lambda_sg
+
+  RedshiftSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Allows access to Redshift"
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5439
+          ToPort: 5439
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: puj_redshift_sg
+
+Outputs:
+  VPCId:
+    Value: !Ref VPC
+  PublicSubnet1ID:
+    Value: !Ref PublicSubnet1
+  PublicSubnet2ID:
+    Value: !Ref PublicSubnet2
+  PrivateSubnetID:
+    Value: !Ref PrivateSubnet
+  NATGatewayID:
+    Value: !Ref NATGateway
+

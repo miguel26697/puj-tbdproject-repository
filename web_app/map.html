@@ -43,16 +43,9 @@
     // Ruta visual
     const velocidadPromedio = 20; // km/h
     const colorRuta = velocidadPromedio > 25 ? "green" : velocidadPromedio > 10 ? "red" : "red";
-
-    const route = L.polyline([portalNorte, heroes], {
-    color: colorRuta,
-    weight: 8,
-    opacity: 0.5
-    }).addTo(map);
-
-
-    // Diccionario de marcadores por bus
-    const markers = {};
+    // Diccionarios de marcadores
+    const busMarkers = {};
+    const stationMarkers = {};
 
     // Icono de bus
     const busIcon = L.icon({
@@ -72,29 +65,62 @@
         console.log("API consultada con éxito.");
         console.log("Respuesta API:", text);
 
-        
+
+
         const parsed = JSON.parse(text);
         console.log("Objeto parseado:", parsed);
 
-        const buses = typeof parsed.body === "string" ? JSON.parse(parsed.body) : parsed;
+        const data = typeof parsed.body === "string" ? JSON.parse(parsed.body) : parsed;
 
-        buses.forEach(bus => {
-          const id = bus._id;
-          const [lon, lat] = bus.last_position.coordinates;
-          const speed = bus.speed ? bus.speed.toFixed(1) : 0;
-          const status = bus.status || "DESCONOCIDO";
+        // === DIBUJAR ESTACIONES (solo una vez) ===
+        if (Object.keys(stationMarkers).length === 0 && data.estaciones) {
+          data.estaciones.forEach(est => {
+            const { id, nombre, latitud, longitud, tipo } = est;
 
-          // Crear o actualizar marcador
-          if (!markers[id]) {
-            markers[id] = L.marker([lat, lon], { icon: busIcon }).addTo(map);
-          } else {
-            markers[id].setLatLng([lat, lon]);
-          }
+            const color = tipo === "P" ? "#0033cc" : "#e30613"; // Portales azules, estaciones rojas
+            const estacionesOrdenadas = data.estaciones.sort((a, b) => b.latitud - a.latitud);
+            const rutaCoords = estacionesOrdenadas.map(e => [e.latitud, e.longitud]);
 
-          markers[id].bindPopup(
-            `<b>${id}</b><br>Velocidad: ${speed} km/h<br>Estado: ${status}`
-          );
-        });
+            L.polyline(rutaCoords, {
+                color: "#E30613",  // rojo TransMilenio
+                weight: 6,
+                opacity: 0.1
+              }).addTo(map);
+
+            const marker = L.circleMarker([latitud, longitud], {
+              radius: tipo === "P" ? 8 : 8,
+              color: color,
+              fillColor: color,
+              fillOpacity: 0.9,
+              weight: 1
+            }).addTo(map).bindPopup(`<b>${nombre}</b><br>Tipo: ${tipo === "P" ? "Portal" : "Estación"}`);
+
+            stationMarkers[id] = marker;
+          });
+          console.log(`📍 ${Object.keys(stationMarkers).length} estaciones dibujadas.`);
+        }
+
+        // === DIBUJAR BUSES ===
+        if (data.buses) {
+          data.buses.forEach(bus => {
+            const id = bus._id;
+            const [lon, lat] = bus.last_position.coordinates;
+            const speed = bus.speed ? bus.speed.toFixed(1) : 0;
+            const status = bus.status || "DESCONOCIDO";
+
+            // Crear o actualizar marcador
+            if (!busMarkers[id]) {
+              busMarkers[id] = L.marker([lat, lon], { icon: busIcon }).addTo(map);
+            } else {
+              busMarkers[id].setLatLng([lat, lon]);
+            }
+
+            busMarkers[id].bindPopup(
+              `<b>${id}</b><br>Velocidad: ${speed} km/h<br>Estado: ${status}`
+            );
+          });
+        }
+
       } catch (err) {
         console.error("❌ Error al consultar API:", err);
       }

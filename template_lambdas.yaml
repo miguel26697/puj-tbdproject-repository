@@ -8,9 +8,6 @@ Parameters:
   LambdaRole:
     Type: String
     Description: "El ARN del rol IAM que la función Lambda usará."
-  DocDBHost:
-    Type: String
-    Description: "El endpoint del cluster de DocumentDB (ej: ...docdb.amazonaws.com)"
   DocDBSecretArn:
     Type: String
     Description: "El ARN del secreto en AWS Secrets Manager que contiene el user/pass de DocumentDB."
@@ -60,7 +57,7 @@ Resources:
   BusLocationFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: puj-simulador-transmilenio
+      FunctionName: puj-lambda-api
       Runtime: python3.10
       CodeUri: src/lambda_functions/bus_location_processor/
       Handler: app.lambda_handler # (El archivo se llama app.py y la función lambda_handler)
@@ -71,7 +68,32 @@ Resources:
         - !Ref PymongoLayer # Adjunta la capa de pymongo
       Environment:
         Variables:
-          SECRET_NAME: !Ref DocumentDBSecretName
+          REGION_NAME: !Ref RegionName
+          CA_CERT_PATH: /opt/python/global-bundle.pem
+    
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroupId
+        SubnetIds:
+          - !Ref PrivateSubnetA
+
+  # -----------------------------------------------------------------
+  # 2. Lambda Function puj-getpositions
+  # -----------------------------------------------------------------
+  BusLocationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: puj-lambda-getpositions
+      Runtime: python3.10
+      CodeUri: src/lambda_functions/get-positions/
+      Handler: app.lambda_handler # (El archivo se llama app.py y la función lambda_handler)
+      Role: !Ref LambdaRole
+      Timeout: 20
+      MemorySize: 256
+      Layers:
+        - !Ref PymongoLayer # Adjunta la capa de pymongo
+      Environment:
+        Variables:
           REGION_NAME: !Ref RegionName
           CA_CERT_PATH: /opt/python/global-bundle.pem
     
