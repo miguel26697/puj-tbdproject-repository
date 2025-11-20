@@ -1,0 +1,196 @@
+Consultas estáticas para Aurora PostgreSQL - Proyecto TransMilenio
+
+Descripción:
+Estas consultas son estáticas y forman parte del conjunto fijo de operaciones necesarias para obtener información estructurada desde Aurora PostgreSQL. Debido a que el modelo de datos es estable y los requerimientos no cambian dinámicamente, las consultas permanecen constantes durante el proyecto.
+
+------------------------------------------------------------
+1. Ver todos los buses por ruta
+------------------------------------------------------------
+
+SELECT
+    r.codigo        AS ruta_codigo,
+    r.nombre        AS ruta_nombre,
+    b.id            AS bus_id,
+    b.placa,
+    b.modelo,
+    tb.nombre       AS tipo_bus,
+    b.estado        AS estado_bus,
+    b.fecha_asignacion
+FROM ruta r
+JOIN bus b
+    ON b.ruta_id = r.id
+JOIN tipo_bus tb
+    ON tb.id = b.tipo_bus_id
+ORDER BY
+    r.codigo,
+    b.placa;
+
+------------------------------------------------------------
+2. Buses de una ruta específica (por código)
+------------------------------------------------------------
+
+SELECT
+    r.codigo        AS ruta_codigo,
+    r.nombre        AS ruta_nombre,
+    b.id            AS bus_id,
+    b.placa,
+    b.modelo,
+    tb.nombre       AS tipo_bus,
+    b.estado        AS estado_bus,
+    b.fecha_asignacion
+FROM ruta r
+JOIN bus b
+    ON b.ruta_id = r.id
+JOIN tipo_bus tb
+    ON tb.id = b.tipo_bus_id
+WHERE r.codigo = 'B74'
+ORDER BY
+    b.placa;
+
+------------------------------------------------------------
+3. Estaciones por ruta en orden
+------------------------------------------------------------
+
+SELECT
+    r.codigo                AS ruta_codigo,
+    r.nombre                AS ruta_nombre,
+    e.id                    AS estacion_id,
+    e.nombre                AS estacion_nombre,
+    e.tipo                  AS tipo_estacion,
+    e.estado                AS estado_estacion,
+    e.latitud,
+    e.longitud,
+    e.direccion,
+    epr.orden,
+    epr.parada,
+    epr.fecha_creacion
+FROM ruta r
+JOIN estacion_por_ruta epr
+    ON epr.ruta_id = r.id
+JOIN estacion e
+    ON e.id = epr.estacion_id
+ORDER BY
+    r.codigo,
+    epr.orden;
+
+------------------------------------------------------------
+4. Solo paradas oficiales por ruta
+------------------------------------------------------------
+
+SELECT
+    r.codigo                AS ruta_codigo,
+    r.nombre                AS ruta_nombre,
+    e.id                    AS estacion_id,
+    e.nombre                AS estacion_nombre,
+    epr.orden,
+    epr.parada
+FROM ruta r
+JOIN estacion_por_ruta epr
+    ON epr.ruta_id = r.id
+JOIN estacion e
+    ON e.id = epr.estacion_id
+WHERE epr.parada = TRUE
+ORDER BY
+    r.codigo,
+    epr.orden;
+
+------------------------------------------------------------
+5. Origen y destino por ruta
+------------------------------------------------------------
+
+SELECT
+    r.codigo                        AS ruta_codigo,
+    r.nombre                        AS ruta_nombre,
+    eo.nombre                       AS origen,
+    ed.nombre                       AS destino,
+    r.estado,
+    r.fecha_creacion
+FROM ruta r
+LEFT JOIN estacion eo
+    ON eo.id = r.estacion_origen_id
+LEFT JOIN estacion ed
+    ON ed.id = r.estacion_destino_id
+ORDER BY
+    r.codigo;
+
+------------------------------------------------------------
+6. Número de buses por ruta
+------------------------------------------------------------
+
+SELECT
+    r.codigo        AS ruta_codigo,
+    r.nombre        AS ruta_nombre,
+    COUNT(b.id)     AS cantidad_buses
+FROM ruta r
+LEFT JOIN bus b
+    ON b.ruta_id = r.id
+GROUP BY
+    r.codigo,
+    r.nombre
+ORDER BY
+    r.codigo;
+
+------------------------------------------------------------
+7. Total de usuarios
+------------------------------------------------------------
+
+SELECT 
+    COUNT(*) AS total_usuarios
+FROM persona;
+
+------------------------------------------------------------
+8. Usuarios activos vs inactivos
+------------------------------------------------------------
+
+SELECT 
+    estado,
+    COUNT(*) AS cantidad
+FROM persona
+GROUP BY estado
+ORDER BY estado;
+
+------------------------------------------------------------
+9. Usuarios por tipo de persona
+------------------------------------------------------------
+
+SELECT 
+    tp.nombre AS tipo_persona,
+    COUNT(p.id) AS cantidad_usuarios
+FROM tipo_persona tp
+LEFT JOIN persona p 
+    ON p.tipo_persona_id = tp.id
+GROUP BY tp.nombre
+ORDER BY tp.nombre;
+
+------------------------------------------------------------
+10. Usuarios por tipo de documento
+------------------------------------------------------------
+
+SELECT
+    td.nombre AS tipo_documento,
+    COUNT(p.id) AS cantidad_usuarios
+FROM tipo_documento td
+LEFT JOIN persona p
+    ON p.tipo_documento_id = td.id
+GROUP BY td.nombre
+ORDER BY td.nombre;
+
+------------------------------------------------------------
+11. Listado completo de usuarios
+------------------------------------------------------------
+
+SELECT
+    p.id,
+    p.nombres,
+    p.apellidos,
+    td.nombre AS tipo_documento,
+    p.documento,
+    tp.nombre AS tipo_persona,
+    p.estado,
+    p.fecha_creacion
+FROM persona p
+JOIN tipo_documento td 
+    ON td.id = p.tipo_documento_id
+JOIN tipo_persona tp
+    ON tp.id = p.tipo_persona_id
+ORDER BY p.id;
