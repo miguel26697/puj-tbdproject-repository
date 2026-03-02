@@ -1,0 +1,62 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "RDS PostgreSQL instance for proyecto TransMilenio (puj-transmilenio)"
+
+Parameters:
+  DBPassword:
+    Type: String
+    NoEcho: true
+    Description: Password del usuario administrador (no se almacena en texto plano)
+
+Resources:
+  PujTransmilenioDB:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: puj-transmilenio
+      DBInstanceClass: db.t4g.micro
+      Engine: postgres
+      EngineVersion: "17.4"
+      DBName: puj_transmilenio_db
+      MasterUsername: puj_admin
+
+      AllocatedStorage: 20
+      StorageType: gp2
+      MaxAllocatedStorage: 1000
+
+      DBSubnetGroupName: default-vpc-0d8e000397287b2e9
+      VPCSecurityGroups:
+        - sg-0dca57789841ced98
+
+      BackupRetentionPeriod: 0
+      PreferredBackupWindow: "06:21-06:51"
+      PreferredMaintenanceWindow: "sat:07:16-sat:07:46"
+
+      PubliclyAccessible: true
+      MultiAZ: false
+      AutoMinorVersionUpgrade: true
+      DeletionProtection: false
+
+      StorageEncrypted: true
+      KmsKeyId: arn:aws:kms:us-east-1:394208074279:key/16de1c9a-3e27-48e1-a3ae-9ba101e67021
+
+      PerformanceInsightsEnabled: true
+      PerformanceInsightsKMSKeyId: arn:aws:kms:us-east-1:394208074279:key/16de1c9a-3e27-48e1-a3ae-9ba101e67021
+      PerformanceInsightsRetentionPeriod: 7
+
+      CopyTagsToSnapshot: true
+      MonitoringInterval: 0
+      NetworkType: IPV4
+
+      MasterUserPassword: !Ref DBPassword
+
+Outputs:
+  DBInstanceIdentifier:
+    Description: Identificador de la instancia RDS
+    Value: !Ref PujTransmilenioDB
+
+  DBEndpointAddress:
+    Description: Endpoint de conexión de la base de datos
+    Value: !GetAtt PujTransmilenioDB.Endpoint.Address
+
+  DBEndpointPort:
+    Description: Puerto de la base de datos
+    Value: !GetAtt PujTransmilenioDB.Endpoint.Port
